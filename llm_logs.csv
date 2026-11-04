@@ -1,0 +1,224 @@
+Before moving on, confirm that POST /api/users returns 201 and a repeat of the same request returns 400. If either fails, send me the result and we’ll fix that first.
+
+If both work, the next step is the query parameters (where, sort, select, skip, limit, count) on GET /api/users, plus GET /api/users/:id with select and its 404. These are worth a lot of points and don’t depend on tasks.
+
+1. Add this helper at the top of routes/users.js, under the require line:
+
+javascript
+function parseJson(raw, name) {
+    if (raw === undefined) return undefined;
+    try {
+        var v = JSON.parse(raw);
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error();
+        return v;
+    } catch (e) {
+        var err = new Error('The "' + name + '" parameter must be a valid JSON object.');
+        err.status = 400;
+        throw err;
+    }
+}
+
+function parseNum(raw, name) {
+    if (raw === undefined) return undefined;
+    var n = Number(raw);
+    if (raw === '' || !Number.isInteger(n) || n < 0) {
+        var err = new Error('The "' + name + '" parameter must be a non-negative integer.');
+        err.status = 400;
+        throw err;
+    }
+    return n;
+}
+
+2. Replace the usersRoute.get handler with:
+
+javascript
+    usersRoute.get(async function (req, res) {
+        try {
+            var q = req.query;
+            var where = parseJson(q.where, 'where') || {};
+            var sort = parseJson(q.sort, 'sort');
+            var select = parseJson(q.select, 'select');
+            var skip = parseNum(q.skip, 'skip');
+            var limit = parseNum(q.limit, 'limit');
+
+            if (q.count === 'true') {
+                var total = await User.countDocuments(where);
+                return res.status(200).json({ message: 'OK', data: total });
+            }
+
+            var query = User.find(where);
+            if (sort) query = query.sort(sort);
+            if (select) query = query.select(select);
+            if (skip) query = query.skip(skip);
+            if (limit) query = query.limit(limit);
+            var users = await query.exec();
+            res.status(200).json({ message: 'OK', data: users });
+        } catch (err) {
+            if (err.status === 400 || err.name === 'CastError' || err.name === 'MongoServerError')
+                return res.status(400).json({ message: err.status ? err.message : 'One of the query parameters is not valid.', data: {} });
+            res.status(500).json({ message: 'Something went wrong on the server.', data: {} });
+        }
+    });
+
+3. Add GET /users/:id above the return router; line, replacing the comment there:
+
+javascript
+    usersIdRoute.get(async function (req, res) {
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id))
+            return res.status(404).json({ message: 'That user does not exist.', data: {} });
+        try {
+            var select = parseJson(req.query.select, 'select');
+            var query = User.findById(req.params.id);
+            if (select) query = query.select(select);
+            var user = await query.exec();
+            if (!user)
+                return res.status(404).json({ message: 'That user does not exist.', data: {} });
+            res.status(200).json({ message: 'OK', data: user });
+        } catch (err) {
+            if (err.status === 400 || err.name === 'MongoServerError')
+                return res.status(400).json({ message: err.status ? err.message : 'The "select" parameter is not valid.', data: {} });
+            res.status(500).json({ message: 'Something went wrong on the server.', data: {} });
+        }
+    });
+
+“User is not defined” is a ReferenceError. The top of your file is missing a few things, and there’s one typo.
+
+1. Add these lines at the very top of routes/users.js, above module.exports:
+
+javascript
+var User = require('../models/user');
+
+function parseJson(raw, name) {
+    if (raw === undefined) return undefined;
+    try {
+        var v = JSON.parse(raw);
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error();
+        return v;
+    } catch (e) {
+        var err = new Error('The "' + name + '" parameter must be a valid JSON object.');
+        err.status = 400;
+        throw err;
+    }
+}
+
+function parseNum(raw, name) {
+    if (raw === undefined) return undefined;
+    var n = Number(raw);
+    if (raw === '' || !Number.isInteger(n) || n < 0) {
+        var err = new Error('The "' + name + '" parameter must be a non-negative integer.');
+        err.status = 400;
+        throw err;
+    }
+    return n;
+}
+
+Your pasted file starts at module.exports, so it has neither the require for the User model nor the two helper functions. Without them, POST fails with “User is not defined”, and GET with query parameters would fail the same way because parseJson and parseNum aren’t defined either.
+
+2. Fix the typo. In the POST handler, change User.findone( to User.findOne(. The capital O matters, and without it you’d get “findone is not a function” right after fixing the first error.
+
+3. Two small spec fixes (they won’t cause errors now, but the autograder checks the format):
+
+In the two 400 responses for name and email, add data: {}, since every response needs both message and data. For example: res.status(400).json({ message: 'Name is required and must be a non-empty string', data: {} }).
+In the POST catch, don’t send error.message to the client. The spec says never to leak database errors. Use:
+javascript
+  } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: 'Error creating user', data: {} });
+  }
+
+This also prints the real error in your terminal, which helps while debugging.
+
+Then save, restart npm start, and send the same POST again. You should get a 201 with the user. Send it a second time and you should get a 400 for the duplicate email.
+
+That’s the correct result: a 201 with the new user, default pendingTasks: [], and an auto-set dateCreated.
+
+One cleanup: the response includes "__v": 0, which isn’t in the spec’s examples. In models/user.js, add { versionKey: false } as a second argument to the schema, as in the version I gave earlier:
+
+javascript
+var UserSchema = new mongoose.Schema(
+    {
+        name: { type: String, required: [true, "name is required"] },
+        email: { type: String, required: [true, "email is required"], unique: true },
+        pendingTasks: { type: [String], default: [] },
+        dateCreated: { type: Date, default: Date.now }
+    },
+    { versionKey: false }
+);
+
+Do the same in models/task.js when you create it.
+
+Run these checks before moving on (restart npm start first):
+
+Send the same POST again. You should get a 400 for the duplicate email.
+POST with no email. You should get a 400.
+GET /api/users shows your user, and GET /api/users/<the _id> returns just that user.
+GET /api/users/123 gives a 404.
+GET /api/users?select={"_id":0} and ?count=true both work.
+
+Next up: PUT and DELETE for users. Add these above return router; in routes/users.js. For now they only handle name and email. We’ll add the pendingTasks syncing once the Task model has routes, since it needs tasks to exist.
+
+javascript
+    usersIdRoute.put(async function (req, res) {
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id))
+            return res.status(404).json({ message: 'That user does not exist.', data: {} });
+        var b = req.body || {};
+        try {
+            var user = await User.findById(req.params.id);
+            if (!user)
+                return res.status(404).json({ message: 'That user does not exist.', data: {} });
+            if (typeof b.name !== 'string' || !b.name.trim())
+                return res.status(400).json({ message: 'A user must have a name.', data: {} });
+            if (typeof b.email !== 'string' || !b.email.trim())
+                return res.status(400).json({ message: 'A user must have an email.', data: {} });
+            if (await User.findOne({ email: b.email, _id: { $ne: user._id } }))
+                return res.status(400).json({ message: 'A user with that email already exists.', data: {} });
+            user.name = b.name;
+            user.email = b.email;
+            await user.save();
+            res.status(200).json({ message: 'User updated.', data: user });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ message: 'Error updating user', data: {} });
+        }
+    });
+
+    usersIdRoute.delete(async function (req, res) {
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id))
+            return res.status(404).json({ message: 'That user does not exist.', data: {} });
+        try {
+            var user = await User.findById(req.params.id);
+            if (!user)
+                return res.status(404).json({ message: 'That user does not exist.', data: {} });
+            await user.deleteOne();
+            res.status(200).json({ message: 'User deleted.', data: {} });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ message: 'Error deleting user', data: {} });
+        }
+    });
+
+    That’s the template’s original version, and it still works, but only by accident. Here’s why, and the cleaner version to use.
+
+router is one shared object. Your first app.use('/api', ...) already mounts every route registered on it, including users, so /api/users works. The second line mounts the same router again at /api/users, which creates a duplicate set of paths like /api/users/users. It’s harmless but messy. It also has no line for tasks, so routes/tasks.js isn’t being loaded at all.
+
+Replace the file with this:
+
+javascript
+/*
+ * Connect all of your endpoints together here.
+ */
+module.exports = function (app, router) {
+    require('./home.js')(router);
+    require('./users.js')(router);
+    require('./tasks.js')(router);
+
+    app.use('/api', router);
+};
+
+Then:
+
+Save the file and restart npm start.
+Open http://localhost:3000/api/tasks. You should get JSON instead of “Cannot GET”.
+Check that http://localhost:3000/api/users still works too.
+
+If /api/tasks still says “Cannot GET” after the restart, check that routes/tasks.js exists with that exact filename and that the terminal shows no error on startup, such as “Cannot find module”.
